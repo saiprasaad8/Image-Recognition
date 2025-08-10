@@ -1,0 +1,115 @@
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.applications import MobileNetV2
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
+import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.metrics import classification_report, confusion_matrix
+import seaborn as sns
+print("Loading CIFAR-10 dataset...")
+(train_images, train_labels), (test_images, test_labels) = tf.keras.datasets.cifar10.load_data()
+train_images = train_images / 255.0
+test_images = test_images / 255.0
+plt.figure(figsize=(6,6))
+for i in range(9):
+    plt.subplot(3,3,i+1)
+    plt.imshow(train_images[i])
+    plt.title(f"Label: {train_labels[i][0]}")
+    plt.axis('off')
+plt.suptitle('Sample Training Images')
+plt.show()
+print("Building and training custom CNN...")
+cnn_model = models.Sequential([
+    layers.Conv2D(32, (3,3), activation='relu', input_shape=(32,32,3)),
+    layers.MaxPooling2D((2,2)),
+    layers.Conv2D(64, (3,3), activation='relu'),
+    layers.MaxPooling2D((2,2)),
+    layers.Conv2D(64, (3,3), activation='relu'),
+    layers.Flatten(),
+    layers.Dense(64, activation='relu'),
+    layers.Dense(10, activation='softmax')
+])
+cnn_model.compile(optimizer='adam',
+              loss='sparse_categorical_crossentropy',
+              metrics=['accuracy'])
+
+history_cnn = cnn_model.fit(train_images, train_labels,
+                            epochs=10,
+                            validation_data=(test_images, test_labels))
+plt.plot(history_cnn.history['accuracy'], label='train_acc')
+plt.plot(history_cnn.history['val_accuracy'], label='val_acc')
+plt.title('CNN Accuracy')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.show()
+datagen = ImageDataGenerator(
+    rotation_range=20,
+    horizontal_flip=True,
+    width_shift_range=0.2,
+    height_shift_range=0.2,
+    zoom_range=0.2
+)
+datagen.fit(train_images)
+
+aug_history = cnn_model.fit(datagen.flow(train_images, train_labels, batch_size=32),
+                            epochs=10,
+                            validation_data=(test_images, test_labels))
+pred_probs = cnn_model.predict(test_images)
+pred_labels = np.argmax(pred_probs, axis=1)
+cm = confusion_matrix(test_labels, pred_labels)
+plt.figure(figsize=(10,7))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+plt.title('Confusion Matrix - CNN Model')
+plt.xlabel('Predicted')
+plt.ylabel('True')
+plt.show()
+train_resized = tf.image.resize(train_images, [128,128])
+test_resized = tf.image.resize(test_images, [128,128])
+base_model = MobileNetV2(input_shape=(128,128,3), include_top=False, weights='imagenet')
+base_model.trainable = False  
+inputs = tf.keras.Input(shape=(128,128,3))
+x = base_model(inputs, training=False)
+x = GlobalAveragePooling2D()(x)
+x = Dense(128, activation='relu')(x)
+outputs = Dense(10, activation='softmax')(x)
+
+transfer_model = Model(inputs, outputs)
+transfer_model.compile(optimizer='adam',
+                       loss='sparse_categorical_crossentropy',
+                       metrics=['accuracy'])
+
+history_tl = transfer_model.fit(train_resized, train_labels,
+                                epochs=10,
+                                validation_data=(test_resized, test_labels))
+
+
+base_model.trainable = True
+for layer in base_model.layers[:-20]:
+    layer.trainable = False
+
+transfer_model.compile(optimizer=tf.keras.optimizers.Adam(1e-5),
+                       loss='sparse_categorical_crossentropy',
+                       metrics=['accuracy'])
+
+fine_tune_history = transfer_model.fit(train_resized, train_labels,
+                                       epochs=5,
+                                       validation_data=(test_resized, test_labels))
+
+
+transfer_model.save('transfer_model.h5')
+
+
+
+
+plt.plot(history_tl.history['accuracy'], label='transfer_train_acc')
+plt.plot(history_tl.history['val_accuracy'], label='transfer_val_acc')
+plt.plot(fine_tune_history.history['accuracy'], label='finetune_train_acc')
+plt.plot(fine_tune_history.history['val_accuracy'], label='finetune_val_acc')
+plt.title('Transfer Learning Accuracy')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.show()
